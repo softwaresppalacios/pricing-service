@@ -35,18 +35,14 @@ public class PricingEngine {
 
   @Transactional(readOnly = true)
   public RatePlanCatalogResponse getRules(UUID tenantId) {
-    List<RatePlanRuleResponse> rules = ruleRepository.findByTenantIdAndActiveTrueOrderByVehicleTypeAsc(tenantId).stream()
+    List<RatePlanRule> savedRules = ruleRepository.findByTenantIdAndActiveTrueOrderByVehicleTypeAsc(tenantId);
+    return new RatePlanCatalogResponse(List.of("CAR", "MOTORCYCLE", "HEAVY", "BICYCLE").stream()
+      .map(vehicleType -> savedRules.stream()
+        .filter(rule -> vehicleType.equalsIgnoreCase(rule.getVehicleType()))
+        .findFirst()
+        .orElseGet(() -> fallback(tenantId, vehicleType)))
       .map(this::toResponse)
-      .toList();
-    if (!rules.isEmpty()) {
-      return new RatePlanCatalogResponse(rules);
-    }
-    return new RatePlanCatalogResponse(List.of(
-      toResponse(fallback(tenantId, "CAR")),
-      toResponse(fallback(tenantId, "HEAVY")),
-      toResponse(fallback(tenantId, "MOTORCYCLE")),
-      toResponse(fallback(tenantId, "BICYCLE"))
-    ));
+      .toList());
   }
 
   @Transactional
@@ -88,8 +84,7 @@ public class PricingEngine {
     long fullHours = minutes / 60;
     long remainingMinutes = minutes % 60;
     if (fullHours == 0) {
-      BigDecimal fractionTotal = rule.getFractionAmount();
-      return applyCap(rule, fractionTotal);
+      return applyCap(rule, rule.getHourlyAmount());
     }
     BigDecimal total = firstAndAdditionalHourTotal(rule, fullHours);
     if (remainingMinutes > 0) {
