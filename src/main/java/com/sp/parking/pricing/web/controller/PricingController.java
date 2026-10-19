@@ -1,6 +1,7 @@
 package com.sp.parking.pricing.web.controller;
 
 import com.sp.parking.pricing.application.service.PricingEngine;
+import com.sp.parking.pricing.infraestructure.security.RequireRole;
 import com.sp.parking.pricing.web.dto.PricingDtos.*;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +25,7 @@ public class PricingController {
   }
 
   @PutMapping("/rules/{vehicleType}")
+  @RequireRole({"OWNER", "ADMIN"})
   public RatePlanRuleResponse upsertRule(
     @RequestHeader("X-Tenant-Id") UUID tenantId,
     @PathVariable("vehicleType") String vehicleType,
