@@ -1,5 +1,6 @@
 package com.sp.parking.pricing.web.controller;
 
+import com.sp.parking.pricing.infraestructure.client.AuditClient;
 import com.sp.parking.pricing.application.service.PricingEngine;
 import com.sp.parking.pricing.infraestructure.security.RequireRole;
 import com.sp.parking.pricing.web.dto.PricingDtos.*;
@@ -13,6 +14,7 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class PricingController {
   private final PricingEngine pricingEngine;
+  private final AuditClient auditClient;
 
   @PostMapping("/calculate")
   public PricingResponse calculate(@RequestHeader("X-Tenant-Id") UUID tenantId, @Valid @RequestBody PricingRequest request) {
@@ -31,6 +33,11 @@ public class PricingController {
     @PathVariable("vehicleType") String vehicleType,
     @Valid @RequestBody RatePlanRuleRequest request
   ) {
-    return pricingEngine.upsertRule(tenantId, vehicleType, request);
+    RatePlanRuleResponse saved = pricingEngine.upsertRule(tenantId, vehicleType, request);
+    String values = saved.pricingModel() == com.sp.parking.pricing.domain.model.PricingModel.FLAT
+      ? "Tarifa plana " + AuditClient.money(saved.flatAmount())
+      : "1a hora " + AuditClient.money(saved.hourlyAmount()) + " · hora adicional " + AuditClient.money(saved.additionalHourAmount());
+    auditClient.record(tenantId, "TARIFF_UPDATE", "TARIFF", saved.displayName(), values + " · día " + AuditClient.money(saved.dayAmount()) + " · ticket perdido " + AuditClient.money(saved.lostTicketFee()));
+    return saved;
   }
 }

@@ -17,5 +17,8 @@ spring:
     init:
       mode: always
 services:
+  audit:
+    # reporting-audit-service: registro de auditoria de las acciones de los usuarios.
+    base-url: ${AUDIT_SERVICE_URL:http://localhost:8085/api}
   tenant-management:
     base-url: ${TENANT_SERVICE_URL:http://localhost:8081/api}
