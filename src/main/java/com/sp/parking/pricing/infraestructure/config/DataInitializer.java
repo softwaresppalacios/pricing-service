@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.UUID;
 
+/** Crea las tarifas del parqueadero demo solo si no existen; nunca sobrescribe las que el usuario configuro. */
 @Component
 @RequiredArgsConstructor
 public class DataInitializer implements CommandLineRunner {
@@ -19,32 +20,29 @@ public class DataInitializer implements CommandLineRunner {
   @Override
   @Transactional
   public void run(String... args) {
-    seed("CAR", "Carro Normal", 2500, 1500, 18_000);
-    seed("HEAVY", "Carga Pesada", 4500, 2500, 35_000);
-    seed("MOTORCYCLE", "Moto", 1500, 800, 10_000);
-    seed("BICYCLE", "Bicicleta", 1000, 500, 5_000);
+    seed("CAR", "Carro Normal", 2500, 18_000);
+    seed("HEAVY", "Carga Pesada", 4500, 35_000);
+    seed("MOTORCYCLE", "Moto", 1500, 10_000);
+    seed("BICYCLE", "Bicicleta", 1000, 5_000);
   }
 
-  private void seed(String type, String displayName, int hour, int fraction, int day) {
-    RatePlanRule rule = repository.findFirstByTenantIdAndVehicleTypeAndActiveTrue(DEMO_TENANT_ID, type).orElseGet(() ->
-      RatePlanRule.builder()
-        .tenantId(DEMO_TENANT_ID)
-        .vehicleType(type)
-        .active(true)
-        .build()
-    );
-    rule.setDisplayName(displayName);
-    rule.setPricingModel(PricingModel.PROGRESSIVE);
-    rule.setFlatAmount(BigDecimal.valueOf(day));
-    rule.setHourlyAmount(BigDecimal.valueOf(hour));
-    rule.setAdditionalHourAmount(BigDecimal.valueOf(hour));
-    rule.setFractionAmount(BigDecimal.valueOf(fraction));
-    rule.setFractionMinutes(30);
-    rule.setDayAmount(BigDecimal.valueOf(day));
-    rule.setApplyDailyCap(false);
-    rule.setRateIncreaseAfterHours(null);
-    rule.setRateIncreaseAmount(BigDecimal.ZERO);
-    rule.setLostTicketFee(BigDecimal.valueOf(20_000));
-    repository.save(rule);
+  private void seed(String type, String displayName, int hour, int day) {
+    if (repository.findFirstByTenantIdAndVehicleTypeAndActiveTrue(DEMO_TENANT_ID, type).isPresent()) return;
+    repository.save(RatePlanRule.builder()
+      .tenantId(DEMO_TENANT_ID)
+      .vehicleType(type)
+      .displayName(displayName)
+      .pricingModel(PricingModel.PROGRESSIVE)
+      .flatAmount(BigDecimal.valueOf(day))
+      .hourlyAmount(BigDecimal.valueOf(hour))
+      .additionalHourAmount(BigDecimal.valueOf(hour))
+      .fractionAmount(BigDecimal.ZERO)
+      .fractionMinutes(30)
+      .dayAmount(BigDecimal.valueOf(day))
+      .applyDailyCap(false)
+      .rateIncreaseAmount(BigDecimal.ZERO)
+      .lostTicketFee(BigDecimal.valueOf(20_000))
+      .active(true)
+      .build());
   }
 }

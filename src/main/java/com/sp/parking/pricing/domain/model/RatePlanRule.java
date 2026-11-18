@@ -20,8 +20,11 @@ public class RatePlanRule {
   @Column(nullable = false)
   private PricingModel pricingModel;
   private BigDecimal flatAmount;
+  /** Valor de la primera hora (o fraccion de ella). */
   private BigDecimal hourlyAmount;
+  /** Valor por hora del tiempo despues de la primera hora; los minutos se cobran proporcionalmente. */
   private BigDecimal additionalHourAmount;
+  /** Fraccion: ya no interviene en el calculo; se conserva por compatibilidad con reglas guardadas. */
   private BigDecimal fractionAmount;
   private int fractionMinutes;
   private BigDecimal dayAmount;
