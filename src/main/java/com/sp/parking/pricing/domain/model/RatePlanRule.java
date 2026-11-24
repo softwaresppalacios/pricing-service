@@ -32,5 +32,12 @@ public class RatePlanRule {
   private Integer rateIncreaseAfterHours;
   private BigDecimal rateIncreaseAmount;
   private BigDecimal lostTicketFee;
+  /** false = tipo de vehiculo eliminado (se conserva para el historial y para cobrar tickets anteriores). */
   private boolean active;
+  /**
+   * Como se comporta en la entrada: CAR (espacios de carro y tablero de llaves) o MOTORCYCLE
+   * (espacios de moto y casilleros de casco). Null en reglas antiguas: se deduce del tipo base.
+   */
+  @Column(length = 20)
+  private String category;
 }

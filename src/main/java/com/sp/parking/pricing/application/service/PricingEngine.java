@@ -9,10 +9,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 import java.math.*;
+import java.text.Normalizer;
 import java.time.*;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.CONFLICT;
+import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 /**
  * Cobro por tiempo:
@@ -35,7 +37,8 @@ public class PricingEngine {
   @Transactional(readOnly = true)
   public PricingResponse calculate(UUID tenantId, PricingRequest request) {
     String normalizedVehicleType = request.vehicleType().toUpperCase();
-    RatePlanRule rule = ruleRepository.findFirstByTenantIdAndVehicleTypeAndActiveTrue(tenantId, normalizedVehicleType)
+    // Tambien cobra tipos eliminados: un ticket abierto antes de eliminarlo conserva su tarifa.
+    RatePlanRule rule = latest(tenantId, normalizedVehicleType)
       .orElseGet(() -> fallback(tenantId, normalizedVehicleType));
     normalize(rule);
     Instant in = request.checkedInAt() == null ? Instant.now() : request.checkedInAt();
@@ -50,16 +53,73 @@ public class PricingEngine {
     );
   }
 
+  /**
+   * Tipos de vehiculo del parqueadero con su tarifa: los 4 basicos (salvo los eliminados) y despues los
+   * que agrego el parqueadero, en el orden en que se crearon.
+   */
   @Transactional(readOnly = true)
   public RatePlanCatalogResponse getRules(UUID tenantId) {
-    List<RatePlanRule> savedRules = ruleRepository.findByTenantIdAndActiveTrueOrderByVehicleTypeAsc(tenantId);
-    return new RatePlanCatalogResponse(List.of("CAR", "MOTORCYCLE", "HEAVY", "BICYCLE").stream()
-      .map(vehicleType -> savedRules.stream()
-        .filter(rule -> vehicleType.equalsIgnoreCase(rule.getVehicleType()))
-        .findFirst()
-        .orElseGet(() -> fallback(tenantId, vehicleType)))
-      .map(this::toResponse)
-      .toList());
+    Map<String, RatePlanRule> latest = latestByType(tenantId);
+    List<RatePlanRule> catalog = new ArrayList<>();
+    for (String base : BASE_TYPES) {
+      RatePlanRule saved = latest.get(base);
+      if (saved == null) catalog.add(fallback(tenantId, base));
+      else if (saved.isActive()) catalog.add(saved);
+    }
+    latest.values().stream()
+      .filter(rule -> rule.isActive() && !BASE_TYPES.contains(rule.getVehicleType()))
+      .sorted(Comparator.comparing(RatePlanRule::getId))
+      .forEach(catalog::add);
+    return new RatePlanCatalogResponse(catalog.stream().map(this::toResponse).toList());
+  }
+
+  /** Agrega un tipo de vehiculo propio del parqueadero ("Camioneta", "Patineta"...) con su tarifa. */
+  @Transactional
+  public RatePlanRuleResponse createType(UUID tenantId, VehicleTypeCreateRequest request) {
+    String name = request.displayName().trim();
+    String category = category(request.category());
+    boolean duplicated = getRules(tenantId).rules().stream().anyMatch(rule -> rule.displayName().equalsIgnoreCase(name));
+    if (duplicated) throw new ResponseStatusException(CONFLICT, "Ya existe un tipo de vehículo llamado \"" + name + "\"");
+    validateAmounts(request.pricingModel(), request.flatAmount(), request.hourlyAmount(), request.additionalHourAmount());
+    RatePlanRule rule = RatePlanRule.builder()
+      .tenantId(tenantId)
+      .vehicleType(uniqueCode(tenantId, name))
+      .displayName(name)
+      .category(category)
+      .pricingModel(request.pricingModel())
+      .flatAmount(scale(request.flatAmount()))
+      .hourlyAmount(scale(request.hourlyAmount()))
+      .additionalHourAmount(scale(request.additionalHourAmount() == null ? request.hourlyAmount() : request.additionalHourAmount()))
+      .fractionAmount(BigDecimal.ZERO)
+      .fractionMinutes(30)
+      .dayAmount(scale(request.dayAmount()))
+      .applyDailyCap(request.applyDailyCap())
+      .rateIncreaseAmount(BigDecimal.ZERO)
+      .lostTicketFee(scale(request.lostTicketFee()))
+      .active(true)
+      .build();
+    normalize(rule);
+    return toResponse(ruleRepository.save(rule));
+  }
+
+  /**
+   * Elimina (desactiva) un tipo de vehiculo. Los tickets, cobros y reportes anteriores conservan su nombre.
+   * Debe quedar al menos un tipo, y no puede estar en uso: eso lo verifica quien llama con parking-operation-service.
+   */
+  @Transactional
+  public RatePlanRuleResponse deactivateType(UUID tenantId, String vehicleType) {
+    String code = vehicleType.toUpperCase();
+    List<RatePlanRuleResponse> active = getRules(tenantId).rules();
+    if (active.stream().noneMatch(rule -> rule.vehicleType().equals(code))) {
+      throw new ResponseStatusException(NOT_FOUND, "Ese tipo de vehículo no existe o ya fue eliminado");
+    }
+    if (active.size() <= 1) {
+      throw new ResponseStatusException(CONFLICT, "Debe quedar al menos un tipo de vehículo");
+    }
+    RatePlanRule rule = latest(tenantId, code).orElseGet(() -> fallback(tenantId, code));
+    normalize(rule);
+    rule.setActive(false);
+    return toResponse(ruleRepository.save(rule));
   }
 
   @Transactional
@@ -69,8 +129,18 @@ public class PricingEngine {
     }
     validateRule(request);
     String normalizedVehicleType = vehicleType.toUpperCase();
-    RatePlanRule rule = ruleRepository.findFirstByTenantIdAndVehicleTypeAndActiveTrue(tenantId, normalizedVehicleType)
+    RatePlanRule rule = latest(tenantId, normalizedVehicleType)
       .orElseGet(() -> RatePlanRule.builder().tenantId(tenantId).vehicleType(normalizedVehicleType).build());
+    if (rule.getId() != null && !rule.isActive()) {
+      throw new ResponseStatusException(CONFLICT, "Este tipo de vehículo fue eliminado; créalo de nuevo si lo necesitas");
+    }
+    if (rule.getId() == null && !BASE_TYPES.contains(normalizedVehicleType)) {
+      throw new ResponseStatusException(NOT_FOUND, "Ese tipo de vehículo no existe");
+    }
+    // La categoria solo se puede cambiar en los tipos agregados; los basicos la tienen fija.
+    if (!BASE_TYPES.contains(normalizedVehicleType) && request.category() != null && !request.category().isBlank()) {
+      rule.setCategory(category(request.category()));
+    }
     rule.setVehicleType(normalizedVehicleType);
     rule.setDisplayName(request.displayName());
     rule.setPricingModel(request.pricingModel());
@@ -84,9 +154,61 @@ public class PricingEngine {
     rule.setRateIncreaseAfterHours(request.rateIncreaseAfterHours());
     rule.setRateIncreaseAmount(scale(request.rateIncreaseAmount()));
     rule.setLostTicketFee(scale(request.lostTicketFee()));
-    rule.setActive(request.active() == null || request.active());
+    // Eliminar un tipo se hace con deactivateType (que verifica que no este en uso), no editando la tarifa.
+    rule.setActive(true);
     normalize(rule);
     return toResponse(ruleRepository.save(rule));
+  }
+
+  /** Los 4 tipos con los que nace todo parqueadero. */
+  static final List<String> BASE_TYPES = List.of("CAR", "MOTORCYCLE", "HEAVY", "BICYCLE");
+
+  /** Categoria de los tipos basicos: moto y bicicleta usan espacios de moto; carro y carga, de carro. */
+  static String baseCategory(String vehicleType) {
+    return "MOTORCYCLE".equals(vehicleType) || "BICYCLE".equals(vehicleType) ? "MOTORCYCLE" : "CAR";
+  }
+
+  private static String category(String value) {
+    String category = value == null ? "" : value.trim().toUpperCase();
+    if (!category.equals("CAR") && !category.equals("MOTORCYCLE")) {
+      throw new ResponseStatusException(BAD_REQUEST, "Indica si el tipo se parquea como carro o como moto");
+    }
+    return category;
+  }
+
+  private Optional<RatePlanRule> latest(UUID tenantId, String vehicleType) {
+    return Optional.ofNullable(latestByType(tenantId).get(vehicleType));
+  }
+
+  /** La regla mas reciente de cada tipo (por si quedaron varias de versiones anteriores). */
+  private Map<String, RatePlanRule> latestByType(UUID tenantId) {
+    Map<String, RatePlanRule> latest = new LinkedHashMap<>();
+    for (RatePlanRule rule : ruleRepository.findByTenantIdOrderByIdAsc(tenantId)) {
+      latest.put(rule.getVehicleType().toUpperCase(), rule);
+    }
+    return latest;
+  }
+
+  /** Codigo interno a partir del nombre: "Camioneta 4x4" -> CAMIONETA_4X4 (unico, incluso frente a tipos eliminados). */
+  private String uniqueCode(UUID tenantId, String displayName) {
+    String base = Normalizer.normalize(displayName, Normalizer.Form.NFD).replaceAll("\\p{M}", "")
+      .toUpperCase().replaceAll("[^A-Z0-9]+", "_").replaceAll("^_+|_+$", "");
+    if (base.isEmpty()) base = "TIPO";
+    base = base.substring(0, Math.min(24, base.length()));
+    Set<String> used = new HashSet<>(BASE_TYPES);
+    ruleRepository.findByTenantIdOrderByIdAsc(tenantId).forEach(rule -> used.add(rule.getVehicleType().toUpperCase()));
+    String code = base;
+    for (int i = 2; used.contains(code); i++) code = base + "_" + i;
+    return code;
+  }
+
+  private void validateAmounts(PricingModel model, BigDecimal flat, BigDecimal hourly, BigDecimal additional) {
+    if (model == PricingModel.FLAT && (flat == null || flat.signum() <= 0)) {
+      throw new ResponseStatusException(BAD_REQUEST, "Ingresa el valor de la tarifa plana");
+    }
+    if (model == PricingModel.PROGRESSIVE && (hourly == null || hourly.signum() <= 0)) {
+      throw new ResponseStatusException(BAD_REQUEST, "Ingresa el valor de la primera hora");
+    }
   }
 
   Charge charge(RatePlanRule rule, long minutes) {
@@ -206,7 +328,9 @@ public class PricingEngine {
       rule.getRateIncreaseAfterHours(),
       scale(rule.getRateIncreaseAmount()),
       scale(rule.getLostTicketFee()),
-      rule.isActive()
+      rule.isActive(),
+      rule.getCategory() != null ? rule.getCategory() : baseCategory(rule.getVehicleType()),
+      !BASE_TYPES.contains(rule.getVehicleType())
     );
   }
 

@@ -22,3 +22,6 @@ services:
     base-url: ${AUDIT_SERVICE_URL:http://localhost:8085/api}
   tenant-management:
     base-url: ${TENANT_SERVICE_URL:http://localhost:8081/api}
+  operation:
+    # parking-operation-service: antes de eliminar un tipo de vehiculo se verifica que no este en uso.
+    base-url: ${PARKING_OPERATION_SERVICE_URL:http://localhost:8082/api}

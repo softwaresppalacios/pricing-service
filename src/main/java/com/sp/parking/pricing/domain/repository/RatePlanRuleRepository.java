@@ -7,4 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface RatePlanRuleRepository extends JpaRepository<RatePlanRule, Long> {
   Optional<RatePlanRule> findFirstByTenantIdAndVehicleTypeAndActiveTrue(UUID tenantId, String vehicleType);
   List<RatePlanRule> findByTenantIdAndActiveTrueOrderByVehicleTypeAsc(UUID tenantId);
+  /** Todas las reglas del parqueadero, incluidas las de tipos eliminados (la mas reciente de cada tipo manda). */
+  List<RatePlanRule> findByTenantIdOrderByIdAsc(UUID tenantId);
 }
